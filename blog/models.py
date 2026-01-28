@@ -8,7 +8,57 @@ class TagQuerySet(models.QuerySet):
             posts_with_tag=models.Count('posts')
         ).order_by('-posts_with_tag')
 
+class PostQuerySet(models.QuerySet):
+    def popular(self):
+        return self.annotate(
+            likes_amount=Count('likes')
+        ).order_by('-likes_amount')
+
+    def fetch_with_comments_count(self):
+        posts = list(self)
+        if not posts:
+            return posts
+        post_ids = [post.id for post in posts]
+        comments_counts = (
+            self.model.objects
+            .filter(id__in=post_ids)
+            .annotate(comments_amount=Count('comments'))
+            .values_list('id', 'comments_amount')
+        )
+        count_for_id = dict(comments_counts)
+        for post in posts:
+            post.comments_amount = count_for_id.get(post.id, 0)
+        return posts
+        # fetch_with_comments_count считает количество комментариев отдельным запросом, а не через annotate() в основном queryset.
+
+        # Зачем это нужно и чем лучше annotate:
+
+        # – Не ломает подсчёты, когда queryset уже содержит JOIN’ы (лайки, теги, фильтры).
+        # annotate(Count('comments')) в таких случаях часто врёт из-за умножения строк.
+
+        # – Не усложняет исходный SQL.
+        # Основной запрос остаётся таким, каким ты его задумал, без лишних GROUP BY и DISTINCT.
+
+        # – Работает стабильно с уже отсортированными, отфильтрованными и пагинированными постами.
+        # Счётчик просто “приклеивается” к готовым объектам.
+
+        # Когда использовать:
+
+        # – Если в queryset уже есть annotate, prefetch, сложные JOIN’ы
+        # – Если Count(..., distinct=True) начинает душить базу
+        # – Если важна корректность счётчиков, а не “один запрос любой ценой”
+
+        # Когда не использовать:
+
+        # – Если нужен queryset для дальнейших фильтров/сортировок
+        # – Если простая выборка и обычный annotate работает корректно
+
+        # Итог:
+        # annotate — быстрее и чище в простых случаях.
+        # fetch_with_comments_count — надёжнее в сложных.
+
 class Post(models.Model):
+    objects = PostQuerySet.as_manager()
     title = models.CharField('Заголовок', max_length=200)
     text = models.TextField('Текст')
     slug = models.SlugField('Название в виде url', max_length=200)
